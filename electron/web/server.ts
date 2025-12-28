@@ -54,6 +54,24 @@ app.get('/api/queue', (_req, res) => {
   }
 })
 
+app.get('/api/popular', (_req, res) => {
+  try {
+    const songs = catalogDb.getPopularSongs(20)
+    res.json(songs)
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get popular songs' })
+  }
+})
+
+app.get('/api/discover', (_req, res) => {
+  try {
+    const songs = catalogDb.getRandomSongs(20)
+    res.json(songs)
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get random songs' })
+  }
+})
+
 app.post('/api/queue', (req, res) => {
   const { songId, singerName } = req.body
   if (!songId || !singerName) {
@@ -254,6 +272,7 @@ function getMobileAppHTML(): string {
       color: white;
       min-height: 100vh;
       padding: 16px;
+      padding-bottom: 80px;
     }
     .header {
       text-align: center;
@@ -270,7 +289,7 @@ function getMobileAppHTML(): string {
     .search-box {
       position: sticky;
       top: 0;
-      background: #1a1a2e;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
       padding: 12px 0;
       z-index: 10;
     }
@@ -291,7 +310,11 @@ function getMobileAppHTML(): string {
       margin: 20px 0 12px;
       text-transform: uppercase;
       letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
+    .section-title .icon { font-size: 16px; }
     .song-list {
       display: flex;
       flex-direction: column;
@@ -299,36 +322,39 @@ function getMobileAppHTML(): string {
     }
     .song-item {
       background: #2a2a4e;
-      padding: 14px 16px;
+      padding: 12px;
       border-radius: 12px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
     .song-item-info {
       flex: 1;
-      cursor: pointer;
-    }
-    .song-item-info:active {
-      opacity: 0.7;
+      min-width: 0;
     }
     .song-title {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 500;
-      margin-bottom: 4px;
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .song-artist {
-      font-size: 13px;
+      font-size: 12px;
       color: #888;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .preview-btn {
-      width: 44px;
-      height: 44px;
+      width: 36px;
+      height: 36px;
       border-radius: 50%;
       border: none;
       background: #3a3a6e;
       color: white;
-      font-size: 18px;
+      font-size: 14px;
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -340,6 +366,24 @@ function getMobileAppHTML(): string {
     }
     .preview-btn.playing {
       background: #e74c3c;
+    }
+    .queue-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: none;
+      background: #4CAF50;
+      color: white;
+      font-size: 20px;
+      font-weight: bold;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .queue-btn:active {
+      background: #45a049;
     }
     .queue-item {
       display: flex;
@@ -354,12 +398,13 @@ function getMobileAppHTML(): string {
       border-left: 3px solid #4CAF50;
     }
     .queue-number {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: bold;
       color: #666;
       min-width: 24px;
+      text-align: center;
     }
-    .queue-info { flex: 1; }
+    .queue-info { flex: 1; min-width: 0; }
     .queue-singer {
       font-size: 12px;
       color: #4dabf7;
@@ -440,6 +485,55 @@ function getMobileAppHTML(): string {
       z-index: 200;
     }
     .toast.show { transform: translateX(-50%) translateY(0); }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .tab {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      background: #2a2a4e;
+      color: #888;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab.active {
+      background: #4a4a8e;
+      color: white;
+    }
+    .horizontal-scroll {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      padding: 4px 0 16px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .horizontal-scroll::-webkit-scrollbar { display: none; }
+    .song-card {
+      flex-shrink: 0;
+      width: 140px;
+      background: #2a2a4e;
+      border-radius: 12px;
+      padding: 12px;
+      cursor: pointer;
+    }
+    .song-card:active { opacity: 0.8; }
+    .song-card .song-title {
+      font-size: 13px;
+      margin-bottom: 4px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      white-space: normal;
+    }
+    .song-card .song-artist {
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
@@ -452,15 +546,30 @@ function getMobileAppHTML(): string {
     <input type="text" class="search-input" id="searchInput" placeholder="Search songs..." autocomplete="off">
   </div>
 
-  <div id="queueSection">
-    <div class="section-title">Now Playing & Up Next</div>
-    <div class="song-list" id="queueList">
-      <div class="empty-state">Queue is empty</div>
+  <div id="homeSection">
+    <!-- Queue Section -->
+    <div id="queueSection">
+      <div class="section-title"><span class="icon">📋</span> Queue</div>
+      <div class="song-list" id="queueList">
+        <div class="empty-state">Queue is empty - add some songs!</div>
+      </div>
+    </div>
+
+    <!-- Popular Section -->
+    <div id="popularSection">
+      <div class="section-title"><span class="icon">🔥</span> Most Popular</div>
+      <div class="horizontal-scroll" id="popularList"></div>
+    </div>
+
+    <!-- Discover Section -->
+    <div id="discoverSection">
+      <div class="section-title"><span class="icon">✨</span> Discover</div>
+      <div class="horizontal-scroll" id="discoverList"></div>
     </div>
   </div>
 
   <div id="resultsSection" style="display: none;">
-    <div class="section-title">Search Results</div>
+    <div class="section-title"><span class="icon">🔍</span> Search Results</div>
     <div class="song-list" id="resultsList"></div>
   </div>
 
@@ -504,7 +613,7 @@ function getMobileAppHTML(): string {
       const query = searchInput.value.trim();
       if (query.length < 2) {
         document.getElementById('resultsSection').style.display = 'none';
-        document.getElementById('queueSection').style.display = 'block';
+        document.getElementById('homeSection').style.display = 'block';
         return;
       }
       searchTimeout = setTimeout(() => searchSongs(query), 300);
@@ -520,9 +629,27 @@ function getMobileAppHTML(): string {
       }
     }
 
+    function renderSongItem(song) {
+      return '<div class="song-item">' +
+        '<button class="preview-btn" id="preview-' + song.id + '" onclick="togglePreview(' + song.id + ', event)" title="Preview">▶</button>' +
+        '<div class="song-item-info">' +
+          '<div class="song-title">' + escapeHtml(song.title) + '</div>' +
+          '<div class="song-artist">' + escapeHtml(song.artist || 'Unknown Artist') + '</div>' +
+        '</div>' +
+        '<button class="queue-btn" onclick="selectSong(' + song.id + ', \\'' + escapeHtml(song.title).replace(/'/g, "\\\\'") + '\\')" title="Add to Queue">+</button>' +
+      '</div>';
+    }
+
+    function renderSongCard(song) {
+      return '<div class="song-card" onclick="selectSong(' + song.id + ', \\'' + escapeHtml(song.title).replace(/'/g, "\\\\'") + '\\')">' +
+        '<div class="song-title">' + escapeHtml(song.title) + '</div>' +
+        '<div class="song-artist">' + escapeHtml(song.artist || 'Unknown') + '</div>' +
+      '</div>';
+    }
+
     function renderResults(songs) {
       const list = document.getElementById('resultsList');
-      document.getElementById('queueSection').style.display = 'none';
+      document.getElementById('homeSection').style.display = 'none';
       document.getElementById('resultsSection').style.display = 'block';
 
       if (songs.length === 0) {
@@ -530,15 +657,7 @@ function getMobileAppHTML(): string {
         return;
       }
 
-      list.innerHTML = songs.slice(0, 50).map(song =>
-        '<div class="song-item">' +
-          '<button class="preview-btn" id="preview-' + song.id + '" onclick="togglePreview(' + song.id + ', event)">▶</button>' +
-          '<div class="song-item-info" onclick="selectSong(' + song.id + ', \\'' + escapeHtml(song.title) + '\\')">' +
-            '<div class="song-title">' + escapeHtml(song.title) + '</div>' +
-            '<div class="song-artist">' + escapeHtml(song.artist || 'Unknown Artist') + '</div>' +
-          '</div>' +
-        '</div>'
-      ).join('');
+      list.innerHTML = songs.slice(0, 50).map(renderSongItem).join('');
     }
 
     function renderQueue(queue) {
@@ -546,7 +665,7 @@ function getMobileAppHTML(): string {
       const activeItems = queue.filter(q => q.status === 'playing' || q.status === 'pending');
 
       if (activeItems.length === 0) {
-        list.innerHTML = '<div class="empty-state">Queue is empty</div>';
+        list.innerHTML = '<div class="empty-state">Queue is empty - add some songs!</div>';
         return;
       }
 
@@ -559,6 +678,24 @@ function getMobileAppHTML(): string {
           '</div>' +
         '</div>'
       ).join('');
+    }
+
+    function renderPopular(songs) {
+      const list = document.getElementById('popularList');
+      if (songs.length === 0) {
+        list.innerHTML = '<div class="empty-state" style="width:100%">No play history yet</div>';
+        return;
+      }
+      list.innerHTML = songs.map(renderSongCard).join('');
+    }
+
+    function renderDiscover(songs) {
+      const list = document.getElementById('discoverList');
+      if (songs.length === 0) {
+        list.innerHTML = '<div class="empty-state" style="width:100%">No songs available</div>';
+        return;
+      }
+      list.innerHTML = songs.map(renderSongCard).join('');
     }
 
     function selectSong(id, title) {
@@ -594,7 +731,7 @@ function getMobileAppHTML(): string {
         closeModal();
         searchInput.value = '';
         document.getElementById('resultsSection').style.display = 'none';
-        document.getElementById('queueSection').style.display = 'block';
+        document.getElementById('homeSection').style.display = 'block';
         showToast('Added to queue!');
       } catch (e) {
         console.error('Failed to add:', e);
@@ -614,8 +751,10 @@ function getMobileAppHTML(): string {
       return div.innerHTML;
     }
 
-    // Load initial queue
+    // Load initial data
     fetch('/api/queue').then(r => r.json()).then(renderQueue).catch(() => {});
+    fetch('/api/popular').then(r => r.json()).then(renderPopular).catch(() => {});
+    fetch('/api/discover').then(r => r.json()).then(renderDiscover).catch(() => {});
 
     // Audio Preview System
     let audioContext = null;
@@ -696,7 +835,6 @@ function getMobileAppHTML(): string {
         if (!res.ok) throw new Error('Failed to load preview');
 
         const data = await res.json();
-        const startTime = Date.now();
 
         // Schedule notes using AudioContext time for precise timing
         const ctx = getAudioContext();

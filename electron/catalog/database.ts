@@ -285,6 +285,33 @@ class CatalogDatabase {
     return stmt.all(limit) as Array<{ song_id: number; singer_name: string; played_at: string; title: string }>
   }
 
+  getPopularSongs(limit = 20): Song[] {
+    if (!this.db) return []
+
+    const stmt = this.db.prepare(`
+      SELECT s.*, COUNT(h.id) as play_count
+      FROM songs s
+      LEFT JOIN play_history h ON s.id = h.song_id
+      GROUP BY s.id
+      ORDER BY play_count DESC, s.title
+      LIMIT ?
+    `)
+
+    return stmt.all(limit) as Song[]
+  }
+
+  getRandomSongs(limit = 20): Song[] {
+    if (!this.db) return []
+
+    const stmt = this.db.prepare(`
+      SELECT * FROM songs
+      ORDER BY RANDOM()
+      LIMIT ?
+    `)
+
+    return stmt.all(limit) as Song[]
+  }
+
   // Cleanup - remove songs whose files no longer exist
   cleanupMissingSongs(): { removed: number; checked: number } {
     if (!this.db) throw new Error('Database not initialized')
