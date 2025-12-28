@@ -70,6 +70,53 @@ app.post('/api/queue', (req, res) => {
   }
 })
 
+// Preview endpoint - returns first 15 seconds of MIDI notes
+app.get('/api/preview/:songId', (req, res) => {
+  const songId = parseInt(req.params.songId)
+  if (isNaN(songId)) {
+    return res.status(400).json({ error: 'Invalid song ID' })
+  }
+
+  try {
+    const song = catalogDb.getSong(songId)
+    if (!song) {
+      return res.status(404).json({ error: 'Song not found' })
+    }
+
+    // Import parser dynamically to get preview notes
+    import('../midi/parser.js').then(({ parseKarFileComplete }) => {
+      try {
+        const parsed = parseKarFileComplete(song.file_path)
+        // Get first 15 seconds of notes
+        const previewDuration = 15000 // 15 seconds in ms
+        const previewNotes = parsed.tracks
+          .flatMap(track => track.notes)
+          .filter(note => note.time * 1000 < previewDuration)
+          .map(note => ({
+            time: note.time * 1000, // Convert to ms
+            duration: note.duration * 1000,
+            midi: note.midi,
+            velocity: note.velocity
+          }))
+          .sort((a, b) => a.time - b.time)
+
+        res.json({
+          notes: previewNotes,
+          duration: Math.min(previewDuration, parsed.duration * 1000)
+        })
+      } catch (parseError) {
+        console.error('Preview parse error:', parseError)
+        res.status(500).json({ error: 'Failed to parse song' })
+      }
+    }).catch(err => {
+      console.error('Import error:', err)
+      res.status(500).json({ error: 'Failed to load parser' })
+    })
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get preview' })
+  }
+})
+
 // Serve mobile web app
 app.get('/', (_req, res) => {
   res.send(getMobileAppHTML())
@@ -252,12 +299,16 @@ function getMobileAppHTML(): string {
       background: #2a2a4e;
       padding: 14px 16px;
       border-radius: 12px;
-      cursor: pointer;
-      transition: transform 0.1s, background 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
-    .song-item:active {
-      transform: scale(0.98);
-      background: #3a3a6e;
+    .song-item-info {
+      flex: 1;
+      cursor: pointer;
+    }
+    .song-item-info:active {
+      opacity: 0.7;
     }
     .song-title {
       font-size: 16px;
@@ -267,6 +318,26 @@ function getMobileAppHTML(): string {
     .song-artist {
       font-size: 13px;
       color: #888;
+    }
+    .preview-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: none;
+      background: #3a3a6e;
+      color: white;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .preview-btn:active {
+      background: #4a4a8e;
+    }
+    .preview-btn.playing {
+      background: #e74c3c;
     }
     .queue-item {
       display: flex;
@@ -458,9 +529,12 @@ function getMobileAppHTML(): string {
       }
 
       list.innerHTML = songs.slice(0, 50).map(song =>
-        '<div class="song-item" onclick="selectSong(' + song.id + ', \\'' + escapeHtml(song.title) + '\\')">' +
-          '<div class="song-title">' + escapeHtml(song.title) + '</div>' +
-          '<div class="song-artist">' + escapeHtml(song.artist || 'Unknown Artist') + '</div>' +
+        '<div class="song-item">' +
+          '<button class="preview-btn" id="preview-' + song.id + '" onclick="togglePreview(' + song.id + ', event)">▶</button>' +
+          '<div class="song-item-info" onclick="selectSong(' + song.id + ', \\'' + escapeHtml(song.title) + '\\')">' +
+            '<div class="song-title">' + escapeHtml(song.title) + '</div>' +
+            '<div class="song-artist">' + escapeHtml(song.artist || 'Unknown Artist') + '</div>' +
+          '</div>' +
         '</div>'
       ).join('');
     }
@@ -488,9 +562,13 @@ function getMobileAppHTML(): string {
     function selectSong(id, title) {
       selectedSong = { id, title };
       document.getElementById('modalSong').textContent = title;
-      document.getElementById('singerInput').value = '';
+      // Load cached name from localStorage
+      const cachedName = localStorage.getItem('singerName') || '';
+      document.getElementById('singerInput').value = cachedName;
       document.getElementById('modal').classList.add('active');
-      document.getElementById('singerInput').focus();
+      if (!cachedName) {
+        document.getElementById('singerInput').focus();
+      }
     }
 
     function closeModal() {
@@ -501,6 +579,9 @@ function getMobileAppHTML(): string {
     async function confirmAdd() {
       const singerName = document.getElementById('singerInput').value.trim();
       if (!singerName || !selectedSong) return;
+
+      // Cache the name for next time
+      localStorage.setItem('singerName', singerName);
 
       try {
         await fetch('/api/queue', {
@@ -533,6 +614,103 @@ function getMobileAppHTML(): string {
 
     // Load initial queue
     fetch('/api/queue').then(r => r.json()).then(renderQueue).catch(() => {});
+
+    // Audio Preview System
+    let audioContext = null;
+    let currentPreviewId = null;
+    let previewTimeouts = [];
+
+    function getAudioContext() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return audioContext;
+    }
+
+    function midiToFreq(midi) {
+      return 440 * Math.pow(2, (midi - 69) / 12);
+    }
+
+    function playNote(midi, duration, velocity) {
+      const ctx = getAudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.value = midiToFreq(midi);
+
+      const vol = (velocity / 127) * 0.3;
+      gain.gain.setValueAtTime(vol, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + Math.min(duration / 1000, 2));
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(ctx.currentTime + Math.min(duration / 1000, 2));
+    }
+
+    function stopPreview() {
+      previewTimeouts.forEach(t => clearTimeout(t));
+      previewTimeouts = [];
+      if (currentPreviewId) {
+        const btn = document.getElementById('preview-' + currentPreviewId);
+        if (btn) {
+          btn.classList.remove('playing');
+          btn.textContent = '▶';
+        }
+        currentPreviewId = null;
+      }
+    }
+
+    async function togglePreview(songId, event) {
+      event.stopPropagation();
+
+      // If already playing this song, stop it
+      if (currentPreviewId === songId) {
+        stopPreview();
+        return;
+      }
+
+      // Stop any current preview
+      stopPreview();
+
+      const btn = document.getElementById('preview-' + songId);
+      btn.classList.add('playing');
+      btn.textContent = '⏹';
+      currentPreviewId = songId;
+
+      try {
+        const res = await fetch('/api/preview/' + songId);
+        if (!res.ok) throw new Error('Failed to load preview');
+
+        const data = await res.json();
+        const startTime = Date.now();
+
+        // Schedule notes
+        data.notes.forEach(note => {
+          const timeout = setTimeout(() => {
+            if (currentPreviewId === songId) {
+              playNote(note.midi, note.duration, note.velocity);
+            }
+          }, note.time);
+          previewTimeouts.push(timeout);
+        });
+
+        // Auto-stop after preview duration
+        const stopTimeout = setTimeout(() => {
+          if (currentPreviewId === songId) {
+            stopPreview();
+          }
+        }, data.duration + 500);
+        previewTimeouts.push(stopTimeout);
+
+      } catch (e) {
+        console.error('Preview failed:', e);
+        stopPreview();
+        showToast('Preview unavailable');
+      }
+    }
   </script>
 </body>
 </html>`
