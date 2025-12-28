@@ -977,6 +977,12 @@ function getMobileAppHTML(): string {
 
         const data = await res.json();
         const ctx = getAudioContext();
+
+        // iOS Safari requires resume() to be called from a user gesture
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+
         const audioStartTime = ctx.currentTime;
 
         // Schedule notes using soundfont player
