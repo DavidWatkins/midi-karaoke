@@ -1,0 +1,539 @@
+import express from 'express'
+import { WebSocketServer, WebSocket } from 'ws'
+import { createServer } from 'http'
+import { networkInterfaces } from 'os'
+import QRCode from 'qrcode'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import { config } from 'dotenv'
+import { catalogDb } from '../catalog/database.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+// Load .env file from project root
+config({ path: path.join(__dirname, '../../.env') })
+
+const app = express()
+app.use(express.json())
+
+// Store WebSocket clients for broadcasting
+const wsClients: WebSocket[] = []
+
+// Get local network IP
+function getLocalIP(): string {
+  const nets = networkInterfaces()
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name] || []) {
+      // Skip internal and non-IPv4 addresses
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address
+      }
+    }
+  }
+  return 'localhost'
+}
+
+// API Routes
+app.get('/api/songs', (req, res) => {
+  const query = (req.query.q as string) || ''
+  try {
+    const songs = catalogDb.searchSongs(query)
+    res.json(songs)
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to search songs' })
+  }
+})
+
+app.get('/api/queue', (_req, res) => {
+  try {
+    const queue = catalogDb.getQueue()
+    res.json(queue)
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get queue' })
+  }
+})
+
+app.post('/api/queue', (req, res) => {
+  const { songId, singerName } = req.body
+  if (!songId || !singerName) {
+    return res.status(400).json({ error: 'songId and singerName are required' })
+  }
+  try {
+    const queueId = catalogDb.addToQueue(songId, singerName)
+    const queue = catalogDb.getQueue()
+    // Broadcast queue update to all WebSocket clients
+    broadcastQueue(queue)
+    res.json({ success: true, queueId })
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to add to queue' })
+  }
+})
+
+// Serve mobile web app
+app.get('/', (_req, res) => {
+  res.send(getMobileAppHTML())
+})
+
+// Broadcast queue to all WebSocket clients
+export function broadcastQueue(queue: unknown) {
+  const message = JSON.stringify({ type: 'queue', data: queue })
+  wsClients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message)
+    }
+  })
+}
+
+// Start the server
+let server: ReturnType<typeof createServer> | null = null
+let wss: WebSocketServer | null = null
+let serverPort = 3333
+let qrCodeDataUrl: string | null = null
+let wifiQrCodeDataUrl: string | null = null
+
+// Generate WiFi QR code from environment variables
+async function generateWifiQRCode(): Promise<string | null> {
+  const ssid = process.env.WIFI_SSID
+  const password = process.env.WIFI_PASSWORD
+  const security = process.env.WIFI_SECURITY || 'WPA'
+
+  if (!ssid) {
+    console.log('WiFi QR code: WIFI_SSID not set in .env')
+    return null
+  }
+
+  // WiFi QR code format: WIFI:T:WPA;S:ssid;P:password;;
+  const wifiString = `WIFI:T:${security};S:${ssid};P:${password || ''};;`
+
+  try {
+    return await QRCode.toDataURL(wifiString, {
+      width: 400,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' }
+    })
+  } catch (error) {
+    console.error('Failed to generate WiFi QR code:', error)
+    return null
+  }
+}
+
+export async function startWebServer(): Promise<{ url: string; qrCode: string }> {
+  return new Promise((resolve, reject) => {
+    server = createServer(app)
+
+    // Setup WebSocket
+    wss = new WebSocketServer({ server })
+    wss.on('connection', (ws) => {
+      wsClients.push(ws)
+      // Send current queue on connect
+      try {
+        const queue = catalogDb.getQueue()
+        ws.send(JSON.stringify({ type: 'queue', data: queue }))
+      } catch (e) {
+        // Ignore if db not ready
+      }
+      ws.on('close', () => {
+        const index = wsClients.indexOf(ws)
+        if (index > -1) wsClients.splice(index, 1)
+      })
+    })
+
+    server.listen(serverPort, '0.0.0.0', async () => {
+      const localIP = getLocalIP()
+      const url = `http://${localIP}:${serverPort}`
+      console.log(`Guest web app running at ${url}`)
+
+      try {
+        qrCodeDataUrl = await QRCode.toDataURL(url, {
+          width: 400,
+          margin: 2,
+          color: { dark: '#000000', light: '#ffffff' }
+        })
+        // Also generate WiFi QR code
+        wifiQrCodeDataUrl = await generateWifiQRCode()
+        resolve({ url, qrCode: qrCodeDataUrl })
+      } catch (error) {
+        reject(error)
+      }
+    })
+
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        serverPort++
+        server?.close()
+        startWebServer().then(resolve).catch(reject)
+      } else {
+        reject(err)
+      }
+    })
+  })
+}
+
+export function getQRCode(): string | null {
+  return qrCodeDataUrl
+}
+
+export function getWifiQRCode(): string | null {
+  return wifiQrCodeDataUrl
+}
+
+export function getWifiSSID(): string | null {
+  return process.env.WIFI_SSID || null
+}
+
+export function stopWebServer() {
+  wsClients.forEach(client => client.close())
+  wsClients.length = 0
+  wss?.close()
+  server?.close()
+}
+
+// Mobile-friendly HTML app
+function getMobileAppHTML(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Karaoke Queue</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: white;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .header {
+      text-align: center;
+      padding: 20px 0;
+    }
+    .header h1 {
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+    .header p {
+      color: #888;
+      font-size: 14px;
+    }
+    .search-box {
+      position: sticky;
+      top: 0;
+      background: #1a1a2e;
+      padding: 12px 0;
+      z-index: 10;
+    }
+    .search-input {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 16px;
+      border: none;
+      border-radius: 12px;
+      background: #2a2a4e;
+      color: white;
+      outline: none;
+    }
+    .search-input::placeholder { color: #666; }
+    .section-title {
+      font-size: 14px;
+      color: #888;
+      margin: 20px 0 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .song-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .song-item {
+      background: #2a2a4e;
+      padding: 14px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: transform 0.1s, background 0.2s;
+    }
+    .song-item:active {
+      transform: scale(0.98);
+      background: #3a3a6e;
+    }
+    .song-title {
+      font-size: 16px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .song-artist {
+      font-size: 13px;
+      color: #888;
+    }
+    .queue-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #2a2a4e;
+      padding: 12px 16px;
+      border-radius: 12px;
+    }
+    .queue-item.playing {
+      background: #1e3a5f;
+      border-left: 3px solid #4CAF50;
+    }
+    .queue-number {
+      font-size: 18px;
+      font-weight: bold;
+      color: #666;
+      min-width: 24px;
+    }
+    .queue-info { flex: 1; }
+    .queue-singer {
+      font-size: 12px;
+      color: #4dabf7;
+    }
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.8);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: #2a2a4e;
+      border-radius: 16px;
+      padding: 24px;
+      width: 100%;
+      max-width: 320px;
+    }
+    .modal h2 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .modal p {
+      color: #888;
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+    .modal input {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 16px;
+      border: none;
+      border-radius: 12px;
+      background: #1a1a2e;
+      color: white;
+      margin-bottom: 16px;
+    }
+    .modal-buttons {
+      display: flex;
+      gap: 12px;
+    }
+    .modal-buttons button {
+      flex: 1;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn-cancel {
+      background: #444;
+      color: white;
+    }
+    .btn-confirm {
+      background: #4CAF50;
+      color: white;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #666;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #4CAF50;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      transition: transform 0.3s;
+      z-index: 200;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🎤 Karaoke Queue</h1>
+    <p>Search for a song and add it to the queue</p>
+  </div>
+
+  <div class="search-box">
+    <input type="text" class="search-input" id="searchInput" placeholder="Search songs..." autocomplete="off">
+  </div>
+
+  <div id="queueSection">
+    <div class="section-title">Now Playing & Up Next</div>
+    <div class="song-list" id="queueList">
+      <div class="empty-state">Queue is empty</div>
+    </div>
+  </div>
+
+  <div id="resultsSection" style="display: none;">
+    <div class="section-title">Search Results</div>
+    <div class="song-list" id="resultsList"></div>
+  </div>
+
+  <div class="modal-overlay" id="modal">
+    <div class="modal">
+      <h2 id="modalTitle">Add to Queue</h2>
+      <p id="modalSong">Song name here</p>
+      <input type="text" id="singerInput" placeholder="Your name">
+      <div class="modal-buttons">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button class="btn-confirm" onclick="confirmAdd()">Add to Queue</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Added to queue!</div>
+
+  <script>
+    let selectedSong = null;
+    let ws = null;
+
+    // WebSocket connection
+    function connectWS() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(protocol + '//' + location.host);
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'queue') {
+          renderQueue(msg.data);
+        }
+      };
+      ws.onclose = () => setTimeout(connectWS, 2000);
+    }
+    connectWS();
+
+    // Search functionality
+    const searchInput = document.getElementById('searchInput');
+    let searchTimeout;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimeout);
+      const query = searchInput.value.trim();
+      if (query.length < 2) {
+        document.getElementById('resultsSection').style.display = 'none';
+        document.getElementById('queueSection').style.display = 'block';
+        return;
+      }
+      searchTimeout = setTimeout(() => searchSongs(query), 300);
+    });
+
+    async function searchSongs(query) {
+      try {
+        const res = await fetch('/api/songs?q=' + encodeURIComponent(query));
+        const songs = await res.json();
+        renderResults(songs);
+      } catch (e) {
+        console.error('Search failed:', e);
+      }
+    }
+
+    function renderResults(songs) {
+      const list = document.getElementById('resultsList');
+      document.getElementById('queueSection').style.display = 'none';
+      document.getElementById('resultsSection').style.display = 'block';
+
+      if (songs.length === 0) {
+        list.innerHTML = '<div class="empty-state">No songs found</div>';
+        return;
+      }
+
+      list.innerHTML = songs.slice(0, 50).map(song =>
+        '<div class="song-item" onclick="selectSong(' + song.id + ', \\'' + escapeHtml(song.title) + '\\')">' +
+          '<div class="song-title">' + escapeHtml(song.title) + '</div>' +
+          '<div class="song-artist">' + escapeHtml(song.artist || 'Unknown Artist') + '</div>' +
+        '</div>'
+      ).join('');
+    }
+
+    function renderQueue(queue) {
+      const list = document.getElementById('queueList');
+      const activeItems = queue.filter(q => q.status === 'playing' || q.status === 'pending');
+
+      if (activeItems.length === 0) {
+        list.innerHTML = '<div class="empty-state">Queue is empty</div>';
+        return;
+      }
+
+      list.innerHTML = activeItems.map((item, i) =>
+        '<div class="queue-item ' + (item.status === 'playing' ? 'playing' : '') + '">' +
+          '<div class="queue-number">' + (item.status === 'playing' ? '▶' : (i + 1)) + '</div>' +
+          '<div class="queue-info">' +
+            '<div class="song-title">' + escapeHtml(item.title) + '</div>' +
+            '<div class="queue-singer">' + escapeHtml(item.singer_name) + '</div>' +
+          '</div>' +
+        '</div>'
+      ).join('');
+    }
+
+    function selectSong(id, title) {
+      selectedSong = { id, title };
+      document.getElementById('modalSong').textContent = title;
+      document.getElementById('singerInput').value = '';
+      document.getElementById('modal').classList.add('active');
+      document.getElementById('singerInput').focus();
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.remove('active');
+      selectedSong = null;
+    }
+
+    async function confirmAdd() {
+      const singerName = document.getElementById('singerInput').value.trim();
+      if (!singerName || !selectedSong) return;
+
+      try {
+        await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ songId: selectedSong.id, singerName })
+        });
+        closeModal();
+        searchInput.value = '';
+        document.getElementById('resultsSection').style.display = 'none';
+        document.getElementById('queueSection').style.display = 'block';
+        showToast('Added to queue!');
+      } catch (e) {
+        console.error('Failed to add:', e);
+      }
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text || '';
+      return div.innerHTML;
+    }
+
+    // Load initial queue
+    fetch('/api/queue').then(r => r.json()).then(renderQueue).catch(() => {});
+  </script>
+</body>
+</html>`
+}
