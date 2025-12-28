@@ -93,12 +93,14 @@ app.get('/api/preview/:songId', (req, res) => {
           .flatMap(track => track.notes)
           .filter(note => note.time * 1000 < previewDuration)
           .map(note => ({
-            time: note.time * 1000, // Convert to ms
-            duration: note.duration * 1000,
+            time: Math.round(note.time * 1000), // Convert to ms
+            duration: Math.round(note.duration * 1000),
             midi: note.midi,
-            velocity: note.velocity
+            // @tonejs/midi stores velocity as 0-1, convert to 0-127
+            velocity: Math.round(note.velocity * 127)
           }))
-          .sort((a, b) => a.time - b.time)
+          // Sort by time ascending, then by midi note descending for chords
+          .sort((a, b) => a.time - b.time || b.midi - a.midi)
 
         res.json({
           notes: previewNotes,
@@ -631,28 +633,37 @@ function getMobileAppHTML(): string {
       return 440 * Math.pow(2, (midi - 69) / 12);
     }
 
-    function playNote(midi, duration, velocity) {
+    function playNoteAtTime(midi, duration, velocity, startTime) {
       const ctx = getAudioContext();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
-      osc.type = 'triangle';
+      // Use sine wave for cleaner sound
+      osc.type = 'sine';
       osc.frequency.value = midiToFreq(midi);
 
-      const vol = (velocity / 127) * 0.3;
-      gain.gain.setValueAtTime(vol, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + Math.min(duration / 1000, 2));
+      const vol = (velocity / 127) * 0.5;
+      const noteDuration = Math.min(duration / 1000, 1.5);
+
+      // Simple piano-like envelope: instant attack, exponential decay
+      gain.gain.setValueAtTime(vol, startTime);
+      gain.gain.setTargetAtTime(0.001, startTime, noteDuration / 3);
 
       osc.connect(gain);
       gain.connect(ctx.destination);
 
-      osc.start();
-      osc.stop(ctx.currentTime + Math.min(duration / 1000, 2));
+      osc.start(startTime);
+      osc.stop(startTime + noteDuration + 0.5);
     }
 
     function stopPreview() {
       previewTimeouts.forEach(t => clearTimeout(t));
       previewTimeouts = [];
+      // Close and recreate audio context to stop all scheduled notes
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
       if (currentPreviewId) {
         const btn = document.getElementById('preview-' + currentPreviewId);
         if (btn) {
@@ -687,15 +698,17 @@ function getMobileAppHTML(): string {
         const data = await res.json();
         const startTime = Date.now();
 
-        // Schedule notes
+        // Schedule notes using AudioContext time for precise timing
+        const ctx = getAudioContext();
+        const audioStartTime = ctx.currentTime;
+
         data.notes.forEach(note => {
-          const timeout = setTimeout(() => {
-            if (currentPreviewId === songId) {
-              playNote(note.midi, note.duration, note.velocity);
-            }
-          }, note.time);
-          previewTimeouts.push(timeout);
+          const noteStartTime = audioStartTime + (note.time / 1000);
+          playNoteAtTime(note.midi, note.duration, note.velocity, noteStartTime);
         });
+
+        // Track that we're playing
+        previewTimeouts.push(setTimeout(() => {}, data.duration + 500));
 
         // Auto-stop after preview duration
         const stopTimeout = setTimeout(() => {
