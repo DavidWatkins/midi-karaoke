@@ -402,6 +402,12 @@ function registerIpcHandlers() {
     return midiPlayer.getMidiDelay()
   })
 
+  // Settings sync across windows
+  ipcMain.handle('settings:update', (_event, key: string, value: unknown) => {
+    sendToAllWindows('settings:changed', { key, value })
+    return true
+  })
+
   // Guest web app
   ipcMain.handle('web:getQRCode', () => {
     return getQRCode()

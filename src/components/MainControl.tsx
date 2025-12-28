@@ -27,6 +27,13 @@ interface QueueItem {
   title?: string
 }
 
+function formatTime(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
 export default function MainControl() {
   const [activeTab, setActiveTab] = useState<'catalog' | 'queue' | 'settings'>('catalog')
   const [midiStatus, setMidiStatus] = useState<MidiStatus>({
@@ -196,15 +203,39 @@ export default function MainControl() {
             </button>
           </div>
 
-          <div className="text-center">
-            <p className="text-gray-400 text-sm">
-              {playbackState?.playing ? (playbackState.paused ? 'Paused' : 'Now Playing') : 'Now Playing'}
-            </p>
-            <p className="text-lg font-medium">
-              {playbackState?.playing ? playbackState.songName || 'Unknown Song' : 'No song playing'}
-            </p>
-            {playbackState?.playing && playbackState.singer && (
-              <p className="text-sm text-indigo-400">{playbackState.singer}</p>
+          <div className="flex-1 mx-8">
+            <div className="text-center mb-2">
+              <p className="text-gray-400 text-sm">
+                {playbackState?.playing ? (playbackState.paused ? 'Paused' : 'Now Playing') : 'Now Playing'}
+              </p>
+              <p className="text-lg font-medium">
+                {playbackState?.playing ? playbackState.songName || 'Unknown Song' : 'No song playing'}
+              </p>
+              {playbackState?.playing && playbackState.singer && (
+                <p className="text-sm text-indigo-400">{playbackState.singer}</p>
+              )}
+            </div>
+
+            {/* Seek slider */}
+            {playbackState?.playing && playbackState.duration > 0 && (
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-400 w-12 text-right">
+                  {formatTime(playbackState.currentTime)}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={playbackState.duration}
+                  value={playbackState.currentTime}
+                  onChange={(e) => {
+                    window.electronAPI?.seek(Number(e.target.value))
+                  }}
+                  className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <span className="text-xs text-gray-400 w-12">
+                  {formatTime(playbackState.duration)}
+                </span>
+              </div>
             )}
           </div>
 

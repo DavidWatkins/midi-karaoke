@@ -26,6 +26,7 @@ interface ElectronAPI {
   pause: () => Promise<void>
   stop: () => Promise<void>
   getPlaybackState: () => Promise<unknown>
+  seek: (timeMs: number) => Promise<unknown>
 
   // MIDI operations
   getMidiOutputs: () => Promise<Array<{ name: string; id: string }>>
@@ -46,6 +47,10 @@ interface ElectronAPI {
   getQRCode: () => Promise<string | null>
   getWifiQRCode: () => Promise<string | null>
   getWifiSSID: () => Promise<string | null>
+
+  // Settings sync across windows
+  updateSetting: (key: string, value: unknown) => Promise<boolean>
+  onSettingsChanged: (callback: (data: { key: string; value: unknown }) => void) => () => void
 }
 
 declare global {

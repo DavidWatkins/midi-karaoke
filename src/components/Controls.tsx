@@ -83,11 +83,8 @@ export default function Controls() {
   const handleLyricsModeChange = (mode: 'normal' | 'bouncing') => {
     setLyricsMode(mode)
     localStorage.setItem('lyricsMode', mode)
-    // Dispatch event so lyrics window can pick it up
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: 'lyricsMode',
-      newValue: mode
-    }))
+    // Broadcast to all windows via IPC
+    window.electronAPI?.updateSetting('lyricsMode', mode)
   }
 
   const handleScanCatalog = async () => {

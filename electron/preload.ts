@@ -33,6 +33,7 @@ try {
     pause: () => ipcRenderer.invoke('playback:pause'),
     stop: () => ipcRenderer.invoke('playback:stop'),
     getPlaybackState: () => ipcRenderer.invoke('playback:state'),
+    seek: (timeMs: number) => ipcRenderer.invoke('playback:seek', timeMs),
 
     // MIDI operations
     getMidiOutputs: () => ipcRenderer.invoke('midi:outputs'),
@@ -75,7 +76,14 @@ try {
     getWifiSSID: () => ipcRenderer.invoke('web:getWifiSSID'),
 
     // Queue management
-    clearQueue: () => ipcRenderer.invoke('queue:clear')
+    clearQueue: () => ipcRenderer.invoke('queue:clear'),
+
+    // Settings sync across windows
+    updateSetting: (key: string, value: unknown) => ipcRenderer.invoke('settings:update', key, value),
+    onSettingsChanged: (callback: (data: { key: string; value: unknown }) => void) => {
+      ipcRenderer.on('settings:changed', (_event: unknown, data: { key: string; value: unknown }) => callback(data))
+      return () => ipcRenderer.removeAllListeners('settings:changed')
+    }
   })
   console.log('=== PRELOAD SCRIPT LOADED SUCCESSFULLY ===')
 } catch (error) {
@@ -103,6 +111,7 @@ declare global {
       pause: () => Promise<void>
       stop: () => Promise<void>
       getPlaybackState: () => Promise<unknown>
+      seek: (timeMs: number) => Promise<unknown>
       getMidiOutputs: () => Promise<string[]>
       setMidiOutput: (name: string) => Promise<void>
       getMidiStatus: () => Promise<unknown>
@@ -118,6 +127,8 @@ declare global {
       getWifiQRCode: () => Promise<string | null>
       getWifiSSID: () => Promise<string | null>
       clearQueue: () => Promise<void>
+      updateSetting: (key: string, value: unknown) => Promise<boolean>
+      onSettingsChanged: (callback: (data: { key: string; value: unknown }) => void) => () => void
     }
   }
 }

@@ -61,18 +61,20 @@ export default function LyricsDisplay() {
     window.electronAPI.getWifiQRCode().then(setWifiQrCode)
   }, [])
 
-  // Listen for WiFi QR toggle changes from settings
+  // Listen for settings changes via IPC (cross-window communication)
   useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'showWifiQR') {
-        setShowWifiQR(e.newValue === 'true')
+    if (!window.electronAPI) return
+
+    const unsubSettings = window.electronAPI.onSettingsChanged((data) => {
+      if (data.key === 'showWifiQR') {
+        setShowWifiQR(data.value === true || data.value === 'true')
       }
-      if (e.key === 'lyricsMode') {
-        setLyricsMode((e.newValue as LyricsMode) || 'normal')
+      if (data.key === 'lyricsMode') {
+        setLyricsMode((data.value as LyricsMode) || 'normal')
       }
-    }
-    window.addEventListener('storage', handleStorage)
-    return () => window.removeEventListener('storage', handleStorage)
+    })
+
+    return () => unsubSettings()
   }, [])
 
   // Keyboard controls
