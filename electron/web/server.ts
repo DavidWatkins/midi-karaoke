@@ -1019,9 +1019,24 @@ function getMobileAppHTML(): string {
       }
     }
 
+    // iOS silent mode bypass: playing an <audio> element switches to "Playback" mode
+    // which ignores the silent switch (like YouTube does)
+    function unlockiOSAudio() {
+      // Create a short silent audio using a data URI (tiny MP3)
+      const silentAudio = new Audio('data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwmHAAAAAAD/+9DEAAAIAANIAAAAgAAA0gAAABBHq4SCCCEIEBASBEQFBQUFH/y4IBgbB8H/8QBg+D5//y4f/h/gh//+sHQfD/UC/1g//9YP+D4f8='
+      );
+      silentAudio.setAttribute('playsinline', 'true');
+      silentAudio.play().then(() => {
+        console.log('iOS audio unlocked (silent mode bypass)');
+      }).catch(e => {
+        console.log('iOS audio unlock skipped:', e.message);
+      });
+    }
+
     // Pre-load piano on first interaction (iOS needs this from user gesture)
     document.addEventListener('click', async () => {
       try {
+        unlockiOSAudio(); // Bypass iOS silent mode
         await getAudioContext(); // Ensure context is resumed
         await loadPiano();
       } catch (e) {
